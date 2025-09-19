@@ -1,0 +1,108 @@
+#!/bin/bash
+
+cleanup() {
+    if [ -n "$TEMP_IMG_FILE" ] && [ -f "$TEMP_IMG_FILE" ]; then
+        rm -f "$TEMP_IMG_FILE"
+    fi
+}
+
+trap cleanup EXIT
+
+if [ "$EUID" -ne 0 ]; then
+  whiptail --title "Error" --msgbox "This script must be run as root." 8 78
+  exit 1
+fi
+
+dependencies=("dmg2img")
+missing_deps=()
+
+for dep in "${dependencies[@]}"; do
+    if ! yay -Q "$dep" &>/dev/null; then
+        missing_deps+=("$dep")
+    fi
+done
+
+if [ ${#missing_deps[@]} -gt 0 ]; then
+    if (whiptail --title "Missing Dependencies" --yesno "The following packages are required:\n\n${missing_deps[*]}\n\nDo you want to install them now?" 12 78); then
+        yay -Syu --noconfirm "${missing_deps[@]}"
+        if [ $? -ne 0 ]; then
+            whiptail --title "Installation Failed" --msgbox "Failed to install dependencies. Please install them manually and run the script again." 8 78
+            exit 1
+        fi
+    else
+        whiptail --title "Cancelled" --msgbox "Cannot proceed without dependencies. Exiting." 8 78
+        exit 1
+    fi
+fi
+
+MACOS_DMG=$(whiptail --title "macOS Bootable USB Creator" --inputbox "Enter the full path to the macOS DMG file:" 10 78 3>&1 1>&2 2>&3)
+
+if [ $? -ne 0 ] || [ -z "$MACOS_DMG" ]; then
+    whiptail --title "Cancelled" --msgbox "No file selected. Exiting." 8 78
+    exit 1
+fi
+
+if [ ! -f "$MACOS_DMG" ]; then
+    whiptail --title "Error" --msgbox "File not found: $MACOS_DMG" 8 78
+    exit 1
+fi
+
+device_list=$(lsblk -d -n -p -o NAME,SIZE,MODEL | awk '{print $1, $2" ("$3" "$4" "$5")"}')
+USB_DEVICE=$(whiptail --title "Select USB Device" --menu "Choose the target USB device (ALL DATA WILL BE ERASED):" 20 78 12 --cancel-button "Exit" ${device_list} 3>&1 1>&2 2>&3)
+
+if [ $? -ne 0 ]; then
+    whiptail --title "Cancelled" --msgbox "Operation cancelled by the user." 8 78
+    exit 1
+fi
+
+if ! (whiptail --title "Confirm Action" --yes-button "Yes, Erase Everything" --no-button "Cancel" --yesno "WARNING: This will completely erase all data on ${USB_DEVICE}. This action is irreversible.\n\nAre you absolutely sure you want to continue?" 12 78); then
+    whiptail --title "Cancelled" --msgbox "Operation cancelled by the user." 8 78
+    exit 1
+fi
+
+TEMP_IMG_FILE=$(mktemp --suffix=.img)
+
+{
+    echo 0
+    echo "Unmounting all partitions on ${USB_DEVICE}..."
+    umount ${USB_DEVICE}* &>/dev/null
+    sleep 1
+    
+    echo 10
+    echo "Converting DMG to IMG format. This may take a while..."
+    dmg2img -i "$MACOS_DMG" -o "$TEMP_IMG_FILE"
+    if [ $? -ne 0 ]; then
+        echo "XXX"
+        echo "Failed to convert DMG file. Make sure it is a valid and uncorrupted image."
+        sleep 5
+        exit 1
+    fi
+    
+    echo 40
+    echo "Writing image to ${USB_DEVICE}. This is the longest step. Please be patient..."
+    dd if="$TEMP_IMG_FILE" of="$USB_DEVICE" bs=1M status=progress &> /dev/null
+    if [ $? -ne 0 ]; then
+        echo "XXX"
+        echo "Failed to write the image to the USB device. The device may have been disconnected."
+        sleep 5
+        exit 1
+    fi
+    
+    echo 95
+    echo "Syncing filesystem..."
+    sync
+    sleep 2
+
+    echo 100
+    echo "Process complete."
+    sleep 1
+
+} | whiptail --gauge "Creating bootable macOS USB..." 7 78 0
+
+if [ ${PIPESTATUS[0]} -ne 0 ]; then
+    whiptail --title "Error" --msgbox "An error occurred during the process. Please check the terminal for details." 8 78
+else
+    whiptail --title "Success" --msgbox "Bootable macOS USB has been successfully created on ${USB_DEVICE}." 8 78
+fi
+
+exit 0
