@@ -23,10 +23,10 @@ msg_fail() {
 cleanup() {
     echo ""
     msg_note "Running cleanup..."
-    if [ -n "$TEMP_IMG_FILE" ] && [ -f "$TEMP_IMG_FILE" ]; {
+    if [ -n "$TEMP_IMG_FILE" ] && [ -f "$TEMP_IMG_FILE" ]; then
         rm -f "$TEMP_IMG_FILE"
         msg_note "Removed temporary image file: $TEMP_IMG_FILE"
-    }
+    fi
     msg_note "Script execution finished at $(date)."
     msg_note "Full log available at: ${LOG_FILE}"
 }
