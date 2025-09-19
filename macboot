@@ -52,7 +52,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 msg_note "Checking for required dependencies..."
-dependencies=("dmg2img")
+dependencies=("dmg2img" "util-linux")
 missing_deps=()
 for dep in "${dependencies[@]}"; do
     if ! pacman -Q "$dep" &>/dev/null; then
@@ -146,6 +146,13 @@ fi
 msg_note "Syncing filesystem to ensure all data is written to the device..."
 sync
 
+msg_note "Ejecting device: ${USB_DEVICE}..."
+eject "$USB_DEVICE"
+if [ $? -ne 0 ]; then
+    msg_fail "Could not eject the device. Please do not remove it until all activity lights are off."
+    exit 1
+fi
+
 echo ""
-msg_success "Bootable macOS USB has been successfully created on ${USB_DEVICE}."
+msg_success "Process complete. The device has been ejected and is now safe to remove."
 exit 0
