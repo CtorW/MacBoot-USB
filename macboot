@@ -1,7 +1,7 @@
 #!/bin/bash
 
 LOG_FILE="macos-creator-$(date +%Y%m%d-%H%M%S).log"
-exec &> >(tee -a "$LOG_FILE")
+exec 3>&1 1>>"$LOG_FILE" 2>&1
 
 echo "--- Script execution started at $(date) ---"
 
@@ -12,6 +12,7 @@ cleanup() {
         rm -f "$TEMP_IMG_FILE"
     fi
     echo "--- Script execution finished at $(date) ---"
+    exec 1>&3 3>&-
 }
 
 trap cleanup EXIT
@@ -34,36 +35,42 @@ done
 
 if [ ${#missing_deps[@]} -gt 0 ]; then
     echo "Missing dependencies: ${missing_deps[*]}"
-    if (whiptail --title "Missing Dependencies" --yesno "The following packages are required:\n\n${missing_deps[*]}\n\nDo you want to install them now?" 12 78); then
+    if (whiptail --title "Missing Dependencies" --yesno "The following packages are required:\n\n${missing_deps[*]}\n\nDo you want to install them now?" 12 78 3>&1 1>&2 2>&3); then
         echo "User chose to install dependencies."
         yay -Syu --noconfirm "${missing_deps[@]}"
         if [ $? -ne 0 ]; then
             echo "Error: Failed to install dependencies."
-            whiptail --title "Installation Failed" --msgbox "Failed to install dependencies. Please install them manually and run the script again. Check log for details:\n\n$LOG_FILE" 10 78
+            whiptail --title "Installation Failed" --msgbox "Failed to install dependencies. Please install them manually. Check log for details:\n\n$LOG_FILE" 10 78 3>&1 1>&2 2>&3
             exit 1
         fi
-        echo "Dependencies installed successfully."
     else
         echo "User declined to install dependencies. Exiting."
-        whiptail --title "Cancelled" --msgbox "Cannot proceed without dependencies. Exiting." 8 78
+        whiptail --title "Cancelled" --msgbox "Cannot proceed without dependencies. Exiting." 8 78 3>&1 1>&2 2>&3
         exit 1
     fi
 fi
 
-MACOS_DMG=$(whiptail --title "macOS Bootable USB Creator" --inputbox "Enter the full path to the macOS DMG file:" 10 78 3>&1 1>&2 2>&3)
+SOURCE_IMAGE=$(whiptail --title "macOS Bootable USB Creator" --inputbox "Enter the full path to the macOS DMG or ISO file:" 10 78 3>&1 1>&2 2>&3)
 
-if [ $? -ne 0 ] || [ -z "$MACOS_DMG" ]; then
-    echo "User cancelled or did not select a DMG file. Exiting."
-    whiptail --title "Cancelled" --msgbox "No file selected. Exiting." 8 78
+if [ $? -ne 0 ] || [ -z "$SOURCE_IMAGE" ]; then
+    echo "User cancelled or did not select an image file. Exiting."
+    whiptail --title "Cancelled" --msgbox "No file selected. Exiting." 8 78 3>&1 1>&2 2>&3
     exit 1
 fi
-echo "User selected DMG file: $MACOS_DMG"
 
-if [ ! -f "$MACOS_DMG" ]; then
-    echo "Error: DMG file not found at $MACOS_DMG"
-    whiptail --title "Error" --msgbox "File not found: $MACOS_DMG" 8 78
+if [ ! -f "$SOURCE_IMAGE" ]; then
+    echo "Error: Image file not found at $SOURCE_IMAGE"
+    whiptail --title "Error" --msgbox "File not found: $SOURCE_IMAGE" 8 78 3>&1 1>&2 2>&3
     exit 1
 fi
+
+file_ext="${SOURCE_IMAGE##*.}"
+if [[ "$file_ext" != "dmg" && "$file_ext" != "iso" ]]; then
+    echo "Error: Invalid file type selected: .$file_ext"
+    whiptail --title "Invalid File Type" --msgbox "Please select a valid .dmg or .iso file." 8 78 3>&1 1>&2 2>&3
+    exit 1
+fi
+echo "User selected image file: $SOURCE_IMAGE"
 
 device_options=()
 while read -r name size model; do
@@ -74,64 +81,63 @@ USB_DEVICE=$(whiptail --title "Select USB Device" --menu "Choose the target USB 
 
 if [ $? -ne 0 ]; then
     echo "User cancelled the USB device selection. Exiting."
-    whiptail --title "Cancelled" --msgbox "Operation cancelled by the user." 8 78
+    whiptail --title "Cancelled" --msgbox "Operation cancelled by the user." 8 78 3>&1 1>&2 2>&3
     exit 1
 fi
 echo "User selected USB device: $USB_DEVICE"
 
-if ! (whiptail --title "Confirm Action" --yes-button "Yes, Erase Everything" --no-button "Cancel" --yesno "WARNING: This will completely erase all data on ${USB_DEVICE}. This action is irreversible.\n\nAre you absolutely sure you want to continue?" 12 78); then
+if ! (whiptail --title "Confirm Action" --yes-button "Yes, Erase Everything" --no-button "Cancel" --yesno "WARNING: This will completely erase all data on ${USB_DEVICE}. This action is irreversible.\n\nAre you absolutely sure you want to continue?" 12 78 3>&1 1>&2 2>&3); then
     echo "User cancelled the final confirmation. Exiting."
-    whiptail --title "Cancelled" --msgbox "Operation cancelled by the user." 8 78
+    whiptail --title "Cancelled" --msgbox "Operation cancelled by the user." 8 78 3>&1 1>&2 2>&3
     exit 1
 fi
-echo "User confirmed device erasure."
 
-TEMP_IMG_FILE=$(mktemp --suffix=.img)
-echo "Created temporary file for IMG conversion: $TEMP_IMG_FILE"
-
-{
-    echo 0
-    echo "Unmounting all partitions on ${USB_DEVICE}..."
-    umount ${USB_DEVICE}*
+(
+    echo 0; echo "Unmounting all partitions on ${USB_DEVICE}..."
+    umount ${USB_DEVICE}* &>/dev/null
     sleep 1
-    
-    echo 10
-    echo "Converting DMG to IMG format. This may take a while..."
-    dmg2img -i "$MACOS_DMG" -o "$TEMP_IMG_FILE"
-    if [ $? -ne 0 ]; then
-        echo "XXX"
-        echo "Failed to convert DMG file. Make sure it is a valid and uncorrupted image."
-        sleep 5
-        exit 1
+
+    SOURCE_FOR_DD="$SOURCE_IMAGE"
+    if [[ "$file_ext" == "dmg" ]]; then
+        echo 10; echo "Detected DMG file. Converting to IMG format..."
+        TEMP_IMG_FILE=$(mktemp --suffix=.img)
+        echo "Created temporary file for IMG conversion: $TEMP_IMG_FILE"
+        dmg2img -i "$SOURCE_IMAGE" -o "$TEMP_IMG_FILE"
+        if [ $? -ne 0 ]; then
+            echo "XXX"
+            echo "ERROR: Failed to convert DMG file. Make sure it is a valid and uncorrupted image." >&2
+            sleep 5
+            exit 1
+        fi
+        SOURCE_FOR_DD="$TEMP_IMG_FILE"
+        echo 40
+    else
+        echo 40; echo "Detected ISO file. Skipping conversion."
     fi
-    
-    echo 40
+
     echo "Writing image to ${USB_DEVICE}. This is the longest step. Please be patient..."
-    dd if="$TEMP_IMG_FILE" of="$USB_DEVICE" bs=1M status=progress
+    dd if="$SOURCE_FOR_DD" of="$USB_DEVICE" bs=1M status=progress
     if [ $? -ne 0 ]; then
         echo "XXX"
-        echo "Failed to write the image to the USB device. The device may have been disconnected."
+        echo "ERROR: Failed to write the image to the USB device. The device may have been disconnected or there was an I/O error." >&2
         sleep 5
         exit 1
     fi
-    
-    echo 95
-    echo "Syncing filesystem..."
+
+    echo 95; echo "Syncing filesystem to ensure all data is written..."
     sync
     sleep 2
-
-    echo 100
-    echo "Process complete."
+    echo 100; echo "Process complete."
     sleep 1
 
-} | whiptail --gauge "Creating bootable macOS USB..." 7 78 0
+) | whiptail --gauge "Creating bootable macOS USB..." 7 78 0
 
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
     echo "Error detected in the creation process pipeline."
-    whiptail --title "Error" --msgbox "An error occurred during the process. Please check the log file for details:\n\n$LOG_FILE" 10 78
+    whiptail --title "Error" --msgbox "An error occurred during the process. Please check the log file for details:\n\n$LOG_FILE" 10 78 3>&1 1>&2 2>&3
 else
     echo "Process completed successfully."
-    whiptail --title "Success" --msgbox "Bootable macOS USB has been successfully created on ${USB_DEVICE}.\n\nA detailed log has been saved to:\n$LOG_FILE" 10 78
+    whiptail --title "Success" --msgbox "Bootable macOS USB has been successfully created on ${USB_DEVICE}.\n\nA detailed log has been saved to:\n$LOG_FILE" 10 78 3>&1 1>&2 2>&3
 fi
 
 exit 0
