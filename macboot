@@ -47,8 +47,13 @@ if [ ! -f "$MACOS_DMG" ]; then
     exit 1
 fi
 
-device_list=$(lsblk -d -n -p -o NAME,SIZE,MODEL | awk '{print $1, $2" ("$3" "$4" "$5")"}')
-USB_DEVICE=$(whiptail --title "Select USB Device" --menu "Choose the target USB device (ALL DATA WILL BE ERASED):" 20 78 12 --cancel-button "Exit" ${device_list} 3>&1 1>&2 2>&3)
+device_options=()
+while read -r name size model; do
+    device_options+=("$name" "$size ($model)")
+done < <(lsblk -d -n -p -o NAME,SIZE,MODEL)
+
+USB_DEVICE=$(whiptail --title "Select USB Device" --menu "Choose the target USB device (ALL DATA WILL BE ERASED):" 20 78 12 --cancel-button "Exit" "${device_options[@]}" 3>&1 1>&2 2>&3)
+
 
 if [ $? -ne 0 ]; then
     whiptail --title "Cancelled" --msgbox "Operation cancelled by the user." 8 78
